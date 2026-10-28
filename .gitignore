@@ -10,3 +10,6 @@ crash.log
 
 # Python venv if tooling is recreated locally
 .venv/
+
+# editor swap files
+*.swp
