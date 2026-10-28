@@ -1,0 +1,12 @@
+# Terraform local state and working dir (state backend is configured per env)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Never commit real variable files — only the .example is allowed
+*.tfvars
+!*.tfvars.example
+
+# Python venv if tooling is recreated locally
+.venv/
