@@ -1,0 +1,81 @@
+# Validation-only pipeline: fmt/validate, manifest validation, IaC security scan.
+# Deployment is intentionally NOT part of this workflow (assessment requirement:
+# keep validation separate from deployment). How a future deploy job would
+# authenticate to AWS (OIDC, short-lived credentials, no long-lived keys) is
+# explained in EXPLANATION.md.
+name: Validate
+
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow only reads the repository. No id-token, no
+# AWS credentials — none of these jobs touch AWS at all.
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform (fmt + init + validate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: terraform fmt (formatting gate)
+        run: terraform fmt -check -diff -recursive
+
+      # -backend=false: validate configuration only; no state backend, no AWS
+      # credentials, no cloud resources touched.
+      - name: terraform init (providers + modules only)
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate (config correctness)
+        run: terraform validate
+
+  kubernetes-manifests:
+    name: Kubernetes (kubeconform, strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # kubeconform ships as a single static binary, not preinstalled on the
+      # runner. Pinned version; -strict rejects unknown/deprecated fields.
+      - name: Install kubeconform v0.6.7
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Validate manifests against Kubernetes schemas
+        run: kubeconform -strict -summary k8s/*.yaml
+
+  iac-security:
+    name: IaC security (Checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Exact pin for reproducible scans; bump deliberately, review changelog.
+      - name: Install Checkov
+        run: pip install checkov==3.3.30
+
+      - name: Scan Terraform
+        run: checkov -d infra --skip-path .terraform --compact
+
+      # CKV_K8S_43 ("image should use digest") is skipped with justification:
+      # this assessment has no real registry image, and digest pinning is done
+      # by the CD pipeline at deploy time (it knows the built image digest).
+      # Git holds the explicit version tag; the image itself is scanned separately.
+      - name: Scan Kubernetes manifests
+        run: checkov -d k8s --framework kubernetes --compact --skip-check CKV_K8S_43
